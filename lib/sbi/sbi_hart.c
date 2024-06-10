@@ -26,6 +26,7 @@
 
 extern void __sbi_expected_trap(void);
 extern void __sbi_expected_trap_hext(void);
+extern unsigned long leave_mmode;
 
 void (*sbi_hart_expected_trap)(void) = &__sbi_expected_trap;
 
@@ -1055,6 +1056,7 @@ sbi_hart_switch_mode(unsigned long arg0, unsigned long arg1,
 
 	register unsigned long a0 asm("a0") = arg0;
 	register unsigned long a1 asm("a1") = arg1;
+  leave_mmode = (unsigned long)csr_read(CSR_CYCLE);
 	__asm__ __volatile__("mret" : : "r"(a0), "r"(a1));
 	__builtin_unreachable();
 }
