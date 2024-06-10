@@ -42,6 +42,12 @@ inline unsigned long read_csr_cycle() {
   return (unsigned long)csr_read(CSR_CYCLE);
 }
 
+static void __noreturn immediately_ecall() {
+  sbi_printf("%s: Happy worlding!\n", __func__);
+  __asm__ __volatile__("ecall" : : );
+  __builtin_unreachable();
+}
+
 static void sbi_boot_print_banner(struct sbi_scratch *scratch)
 {
 	if (scratch->options & SBI_SCRATCH_NO_BOOT_PRINTS)
@@ -366,6 +372,13 @@ static void __noreturn init_coldboot(struct sbi_scratch *scratch, u32 hartid)
 
 	count = sbi_scratch_offset_ptr(scratch, init_count_offset);
 	(*count)++;
+
+  sbi_printf("\n");
+
+  sbi_printf("Target code: 0x%p\n", immediately_ecall);
+  sbi_printf("%s: Setting MEPC & switching modes\n", __FILE__);
+  // FIXME: Insert my timing information RIGHT before the mret in sbi_hart_switch_mode.
+  sbi_hart_switch_mode(hartid, 0, (unsigned long)immediately_ecall, PRV_S, false);
 
 	sbi_hsm_hart_start_finish(scratch, hartid);
 }
