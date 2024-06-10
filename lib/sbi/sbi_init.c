@@ -48,6 +48,16 @@ static void __noreturn immediately_ecall() {
   __builtin_unreachable();
 }
 
+static void __noreturn handle_priv_switch_return() {
+  sbi_printf("%s: Just recorded clock cycle we hit M-mode handler\n", __func__);
+
+  sbi_printf("MCAUSE = 0x%" PRILX "\n", mcause);
+  sbi_printf("MCAUSE was interrupt? %s\n", (mcause >> (__riscv_xlen - 1)) ? "True" : "False");
+  sbi_printf("Hanging hart with WFI\n");
+  sbi_hart_hang();
+  __builtin_unreachable();
+}
+
 static void sbi_boot_print_banner(struct sbi_scratch *scratch)
 {
 	if (scratch->options & SBI_SCRATCH_NO_BOOT_PRINTS)
@@ -374,8 +384,15 @@ static void __noreturn init_coldboot(struct sbi_scratch *scratch, u32 hartid)
 	(*count)++;
 
   sbi_printf("\n");
+  sbi_printf("%sMTVEC%s: 0x%" PRILX "\n",
+		         "Boot HART ", "         ", csr_read(CSR_MTVEC));
 
   sbi_printf("Target code: 0x%p\n", immediately_ecall);
+  // Alter MTVEC so that when S-mode stuff does an ecall, we can print out the
+  // timing data we have collected.
+  sbi_printf("%s: Setting MTVEC\n", __FILE__);
+  csr_write(CSR_MTVEC, handle_priv_switch_return);
+
   sbi_printf("%s: Setting MEPC & switching modes\n", __FILE__);
   // FIXME: Insert my timing information RIGHT before the mret in sbi_hart_switch_mode.
   sbi_hart_switch_mode(hartid, 0, (unsigned long)immediately_ecall, PRV_S, false);
