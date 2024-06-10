@@ -38,6 +38,10 @@
 	"|  __/| |__| (_| | |_) |\n" \
 	"|_|   |_____\\__,_|_.__/\n\n"
 
+inline unsigned long read_csr_cycle() {
+  return (unsigned long)csr_read(CSR_CYCLE);
+}
+
 static void sbi_boot_print_banner(struct sbi_scratch *scratch)
 {
 	if (scratch->options & SBI_SCRATCH_NO_BOOT_PRINTS)
