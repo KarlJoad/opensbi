@@ -42,17 +42,35 @@ inline unsigned long read_csr_cycle() {
   return (unsigned long)csr_read(CSR_CYCLE);
 }
 
+static unsigned long leave_mmode = 0;
+static unsigned long hit_smode = 0;
+static unsigned long leave_smode = 0;
+static unsigned long hit_mmode = 0;
+
 static void __noreturn immediately_ecall() {
   sbi_printf("%s: Happy worlding!\n", __func__);
+  hit_smode = read_csr_cycle();
+  leave_smode = read_csr_cycle();
   __asm__ __volatile__("ecall" : : );
   __builtin_unreachable();
 }
 
 static void __noreturn handle_priv_switch_return() {
+  hit_mmode = read_csr_cycle();
   sbi_printf("%s: Just recorded clock cycle we hit M-mode handler\n", __func__);
 
+  unsigned long mcause = (unsigned long)csr_read(CSR_MCAUSE);
   sbi_printf("MCAUSE = 0x%" PRILX "\n", mcause);
   sbi_printf("MCAUSE was interrupt? %s\n", (mcause >> (__riscv_xlen - 1)) ? "True" : "False");
+  sbi_printf("M->S via mret Raw times\tLeave M: %lu\tHit S: %lu\tDiff: %ld\n",
+             leave_mmode, hit_smode, hit_smode - leave_mmode);
+
+  sbi_printf("S->M Raw times\tLeave S: %lu\tHit M: %lu\tDiff: %ld\n",
+             leave_smode, hit_mmode, hit_mmode - leave_smode);
+
+  sbi_printf("M->S->M round-trip via mret\tLeave M: %lu\tHit M: %lu\tDiff: %ld\n",
+             leave_mmode, hit_mmode, hit_mmode - leave_mmode);
+
   sbi_printf("Hanging hart with WFI\n");
   sbi_hart_hang();
   __builtin_unreachable();
@@ -388,12 +406,16 @@ static void __noreturn init_coldboot(struct sbi_scratch *scratch, u32 hartid)
 		         "Boot HART ", "         ", csr_read(CSR_MTVEC));
 
   sbi_printf("Target code: 0x%p\n", immediately_ecall);
+  sbi_printf("Global Timing Variables\tleaveM: 0x%p\thitS: 0x%p\tleaveS: 0x%p\thitM: 0x%p\n",
+             &leave_mmode, &hit_smode, &leave_smode, &hit_mmode);
+
   // Alter MTVEC so that when S-mode stuff does an ecall, we can print out the
   // timing data we have collected.
   sbi_printf("%s: Setting MTVEC\n", __FILE__);
   csr_write(CSR_MTVEC, handle_priv_switch_return);
 
   sbi_printf("%s: Setting MEPC & switching modes\n", __FILE__);
+  leave_mmode = read_csr_cycle();
   // FIXME: Insert my timing information RIGHT before the mret in sbi_hart_switch_mode.
   sbi_hart_switch_mode(hartid, 0, (unsigned long)immediately_ecall, PRV_S, false);
 
