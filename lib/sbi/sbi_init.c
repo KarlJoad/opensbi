@@ -42,34 +42,43 @@ inline unsigned long read_csr_cycle() {
   return (unsigned long)csr_read(CSR_CYCLE);
 }
 
-unsigned long leave_mmode = 0;
-static unsigned long hit_smode = 0;
-static unsigned long leave_smode = 0;
-static unsigned long hit_mmode = 0;
+/* We have 0x40040000-0x4007FFFF of usable space. That is 4096 64-bit locations.
+ * Because we have other storage considerations, we must use this area wisely and
+ * run a smaller number of iterations.
+ * NOTE: This MUST match what is in sbi_hart.c!
+ * FIXME: We can skirt this issue by using the firmware's heap with sbi_zalloc or
+ * sbi_calloc? */
+#define TEST_ITERATIONS 100UL
+unsigned long iteration_count = 0;
+unsigned long leave_mmode[TEST_ITERATIONS] = {0};
+static unsigned long hit_smode[TEST_ITERATIONS] = {0};
+static unsigned long leave_smode[TEST_ITERATIONS] = {0};
+static unsigned long hit_mmode[TEST_ITERATIONS] = {0};
 
 static void __noreturn immediately_ecall() {
   // sbi_printf("%s: Happy worlding!\n", __func__);
-  hit_smode = read_csr_cycle();
-  leave_smode = read_csr_cycle();
+  hit_smode[iteration_count] = read_csr_cycle();
+  leave_smode[iteration_count] = read_csr_cycle();
   __asm__ __volatile__("ecall" : : );
   __builtin_unreachable();
 }
 
 static void __noreturn handle_priv_switch_return() {
-  hit_mmode = read_csr_cycle();
-  sbi_printf("%s: Just recorded clock cycle we hit M-mode handler\n", __func__);
+  hit_mmode[iteration_count] = read_csr_cycle();
+  iteration_count += 1;
 
-  unsigned long mcause = (unsigned long)csr_read(CSR_MCAUSE);
-  sbi_printf("MCAUSE = 0x%" PRILX "\n", mcause);
-  sbi_printf("MCAUSE was interrupt? %s\n", (mcause >> (__riscv_xlen - 1)) ? "True" : "False");
-  sbi_printf("M->S via mret Raw times\tLeave M: %lu\tHit S: %lu\tDiff: %ld\n",
-             leave_mmode, hit_smode, hit_smode - leave_mmode);
+  if (iteration_count < TEST_ITERATIONS) {
+    sbi_hart_switch_mode(/* hartid */ 0, 0, (unsigned long)immediately_ecall, PRV_S, false);
+    __builtin_unreachable();
+  }
 
-  sbi_printf("S->M Raw times\tLeave S: %lu\tHit M: %lu\tDiff: %ld\n",
-             leave_smode, hit_mmode, hit_mmode - leave_smode);
+  sbi_printf("M->S->M via mret & ecall\n");
+  sbi_printf("Leave M,Hit S,Leave S,Hit M\n");
+  for (unsigned long i = 0; i < TEST_ITERATIONS; i++) {
+    sbi_printf("%lu,%lu,%lu,%lu\n",
+               leave_mmode[i], hit_smode[i], leave_smode[i], hit_mmode[i]);
+  }
 
-  sbi_printf("M->S->M round-trip via mret\tLeave M: %lu\tHit M: %lu\tDiff: %ld\n",
-             leave_mmode, hit_mmode, hit_mmode - leave_mmode);
 
   sbi_printf("Hanging hart with WFI\n");
   sbi_hart_hang();
@@ -407,7 +416,7 @@ static void __noreturn init_coldboot(struct sbi_scratch *scratch, u32 hartid)
 
   sbi_printf("Target code: 0x%p\n", immediately_ecall);
   sbi_printf("Global Timing Variables\tleaveM: 0x%p\thitS: 0x%p\tleaveS: 0x%p\thitM: 0x%p\n",
-             &leave_mmode, &hit_smode, &leave_smode, &hit_mmode);
+             leave_mmode, hit_smode, leave_smode, hit_mmode);
 
   // Alter MTVEC so that when S-mode stuff does an ecall, we can print out the
   // timing data we have collected.
