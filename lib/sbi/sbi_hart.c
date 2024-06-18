@@ -27,10 +27,6 @@
 extern void __sbi_expected_trap(void);
 extern void __sbi_expected_trap_hext(void);
 
-#define TEST_ITERATIONS 100UL
-extern unsigned long iteration_count;
-extern unsigned long leave_mmode[TEST_ITERATIONS];
-
 void (*sbi_hart_expected_trap)(void) = &__sbi_expected_trap;
 
 static unsigned long hart_features_offset;

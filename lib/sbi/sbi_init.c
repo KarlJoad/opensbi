@@ -45,15 +45,8 @@ inline unsigned long read_csr_cycle() {
 /* We have 0x40040000-0x4007FFFF of usable space. That is 4096 64-bit locations.
  * Because we have other storage considerations, we must use this area wisely and
  * run a smaller number of iterations.
- * NOTE: This MUST match what is in sbi_hart.c!
  * FIXME: We can skirt this issue by using the firmware's heap with sbi_zalloc or
  * sbi_calloc? */
-#define TEST_ITERATIONS 100UL
-unsigned long iteration_count = 0;
-unsigned long leave_mmode[TEST_ITERATIONS] = {0};
-static unsigned long hit_smode[TEST_ITERATIONS] = {0};
-static unsigned long leave_smode[TEST_ITERATIONS] = {0};
-static unsigned long hit_mmode[TEST_ITERATIONS] = {0};
 
 static void __noreturn immediately_ecall() {
   // sbi_printf("%s: Happy worlding!\n", __func__);
