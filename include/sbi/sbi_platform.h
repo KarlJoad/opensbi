@@ -730,11 +730,4 @@ static inline int sbi_platform_emulate_store(const struct sbi_platform *plat,
 
 #endif
 
-#define TEST_ITERATIONS 100UL
-unsigned long iteration_count = 0;
-unsigned long leave_mmode[TEST_ITERATIONS] = {0};
-unsigned long hit_smode[TEST_ITERATIONS] = {0};
-unsigned long leave_smode[TEST_ITERATIONS] = {0};
-unsigned long hit_mmode[TEST_ITERATIONS] = {0};
-
 #endif

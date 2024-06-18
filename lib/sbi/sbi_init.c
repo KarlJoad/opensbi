@@ -42,36 +42,95 @@ inline unsigned long read_csr_cycle() {
   return (unsigned long)csr_read(CSR_CYCLE);
 }
 
+/* We delegate ecalls made by S-mode back to S-mode by setting medeleg. We then
+ * use a supervisor ecall trap as a way to fully exit from our infinite
+ * delegation loop. */
+
 /* We have 0x40040000-0x4007FFFF of usable space. That is 4096 64-bit locations.
  * Because we have other storage considerations, we must use this area wisely and
  * run a smaller number of iterations.
  * FIXME: We can skirt this issue by using the firmware's heap with sbi_zalloc or
  * sbi_calloc? */
+#define TEST_ITERATIONS 100UL
+static unsigned long iteration_count = 0;
+static unsigned long leave_smode[TEST_ITERATIONS] = {0};
+static unsigned long hit_mmode[TEST_ITERATIONS] = {0};
+static unsigned long leave_mmode[TEST_ITERATIONS] = {0};
+static unsigned long hit_smode[TEST_ITERATIONS] = {0};
 
+/* NOTE: Executed in S-mode! */
 static void __noreturn immediately_ecall() {
-  // sbi_printf("%s: Happy worlding!\n", __func__);
-  hit_smode[iteration_count] = read_csr_cycle();
-  leave_smode[iteration_count] = read_csr_cycle();
-  __asm__ __volatile__("ecall" : : );
-  __builtin_unreachable();
-}
+  static bool first_iteration = true;
+  /* Do not record an entrance to S-mode on the zeroth iteration. This branch
+   * should be very favorable for a branch predictor. */
+  if (!first_iteration) { // NOTE: I am not happy with this if here.
+    hit_smode[iteration_count] = read_csr_cycle();
+    iteration_count += 1;
+  }
 
-static void __noreturn handle_priv_switch_return() {
-  hit_mmode[iteration_count] = read_csr_cycle();
-  iteration_count += 1;
-
-  if (iteration_count < TEST_ITERATIONS) {
-    sbi_hart_switch_mode(/* hartid */ 0, 0, (unsigned long)immediately_ecall, PRV_S, false);
+  /* This should cause us to go back to M-mode where the handler exits us from
+   * our delegation loop. */
+  if (iteration_count >= TEST_ITERATIONS) {
+    __asm__ __volatile__("ecall" : : );
     __builtin_unreachable();
   }
 
-  sbi_printf("M->S->M via mret & ecall\n");
-  sbi_printf("Leave M,Hit S,Leave S,Hit M\n");
-  for (unsigned long i = 0; i < TEST_ITERATIONS; i++) {
-    sbi_printf("%lu,%lu,%lu,%lu\n",
-               leave_mmode[i], hit_smode[i], leave_smode[i], hit_mmode[i]);
-  }
+  first_iteration = false;
+  leave_smode[iteration_count] = read_csr_cycle();
+  /* An illegal instruction. */
+  csr_write(CSR_MARCHID, 0UL);
+  __builtin_unreachable();
+}
 
+/* NOTE: Executed in M-mode! */
+static void __noreturn handle_priv_switch_return() {
+  unsigned long hit_mmode_holder = read_csr_cycle();
+
+  const unsigned long next_mode = PRV_S;
+  const unsigned long next_addr = (unsigned long)immediately_ecall;
+
+  /* Figure out where to go for this exception. */
+  unsigned long mcause = csr_read(CSR_MCAUSE);
+  switch (mcause) {
+  /* The SUPERVISOR_ECALL exception is our ticket out of an infinite
+   * delegation loop that we should always take! */
+  case CAUSE_ILLEGAL_INSTRUCTION: {
+    /* Because this WAS what we track, we should update hit_mmode. */
+    hit_mmode[iteration_count] = hit_mmode_holder;
+    /* sbi_printf("ILLEGAL INSTRUCTION! MEDELEG illegal: %lu\n", */
+    /*            (unsigned long)((csr_read(CSR_MEDELEG) >> CAUSE_ILLEGAL_INSTRUCTION) & 1UL)); */
+    /* Set all CSRs up to return to a different privilege mode via mret. */
+    unsigned long val = csr_read(CSR_MSTATUS);
+	  val = INSERT_FIELD(val, MSTATUS_MPP, next_mode);
+	  /* val = INSERT_FIELD(val, MSTATUS_MPIE, 0); */
+	  csr_write(CSR_MSTATUS, val);
+	  csr_write(CSR_MEPC, next_addr);
+	  /* csr_write(CSR_STVEC, next_addr); */
+	  /* csr_write(CSR_SSCRATCH, 0); */
+	  /* csr_write(CSR_SIE, 0); */
+	  /* csr_write(CSR_SATP, 0); */
+    /* NOTE: This should be the only assignment to leave_mmode in the entire
+     * OpenSBI codebase! */
+    leave_mmode[iteration_count] = read_csr_cycle();
+	  __asm__ __volatile__("mret" : : );
+    /* We should never past this point! Should jump to immediately_ecall! */
+    __builtin_unreachable();
+    break;
+  }
+  /* During delegation, the supervisor ecall branch should NEVER HAPPEN! */
+  case CAUSE_SUPERVISOR_ECALL:
+    sbi_printf("SUPERVISOR ecall! Measurements finished!\n");
+    sbi_printf("Leave S,Hit M,Leave M,Hit S\n");
+    for (unsigned long i = 0; i < TEST_ITERATIONS; i++) {
+      sbi_printf("%lu,%lu,%lu,%lu\n",
+                 leave_smode[i], hit_mmode[i], leave_mmode[i], hit_smode[i]);
+    }
+    break;
+  default:
+    sbi_printf("Unknown exception/interrupt! Stopping all measurements!\n");
+    sbi_printf("MCAUSE: 0x%" PRILX "\n", mcause);
+    break;
+  }
 
   sbi_printf("Hanging hart with WFI\n");
   sbi_hart_hang();
@@ -408,17 +467,25 @@ static void __noreturn init_coldboot(struct sbi_scratch *scratch, u32 hartid)
 		         "Boot HART ", "         ", csr_read(CSR_MTVEC));
 
   sbi_printf("Target code: 0x%p\n", immediately_ecall);
-  sbi_printf("Global Timing Variables\tleaveM: 0x%p\thitS: 0x%p\tleaveS: 0x%p\thitM: 0x%p\n",
-             leave_mmode, hit_smode, leave_smode, hit_mmode);
+  sbi_printf("Global Timing Variables\tleaveS: 0x%p\thitM: 0x%p\tleaveM: 0x%p\thitS: 0x%p\n",
+             leave_smode, hit_mmode, leave_mmode, hit_smode);
 
   // Alter MTVEC so that when S-mode stuff does an ecall, we can print out the
   // timing data we have collected.
   sbi_printf("%s: Setting MTVEC\n", __FILE__);
   csr_write(CSR_MTVEC, handle_priv_switch_return);
 
+  /* Set up delegation for numbers collection. */
+  unsigned long medeleg = csr_read(CSR_MEDELEG);
+  sbi_printf("MEDELEG before: 0x%" PRILX "\n", csr_read(CSR_MEDELEG));
+  medeleg |= (1UL << CAUSE_ILLEGAL_INSTRUCTION);
+  csr_write(CSR_MEDELEG, medeleg);
+  sbi_printf("MEDELEG after:  0x%" PRILX "\n", csr_read(CSR_MEDELEG));
+  sbi_printf("Delegate illegal? %s\n",
+             ((csr_read(CSR_MEDELEG) >> CAUSE_ILLEGAL_INSTRUCTION) & 1UL) ? "True" : "False");
+
+  iteration_count = 0;
   sbi_printf("%s: Setting MEPC & switching modes\n", __FILE__);
-  // Timing information should start RIGHT before the mret in sbi_hart_switch_mode.
-  // leave_mmode = read_csr_cycle();
   sbi_hart_switch_mode(hartid, 0, (unsigned long)immediately_ecall, PRV_S, false);
 
 	sbi_hsm_hart_start_finish(scratch, hartid);
